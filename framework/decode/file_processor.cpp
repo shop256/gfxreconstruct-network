@@ -38,6 +38,8 @@
 #include <numeric>
 #include <string>
 
+using asio::ip::tcp;
+
 GFXRECON_BEGIN_NAMESPACE(gfxrecon)
 GFXRECON_BEGIN_NAMESPACE(decode)
 
@@ -81,23 +83,52 @@ void FileProcessor::WaitDecodersIdle()
 
 bool FileProcessor::Initialize(const std::string& filename)
 {
-    bool success = OpenFile(filename);
+    bool success = false;
+    int32_t result = 0;
 
-    if (success)
+    const auto separator = filename.find_last_of(':');
+
+    if (separator != std::string::npos)
     {
-        success = SetActiveFile(filename, true);
-        success = success && ProcessFileHeader();
+        context_ = std::make_unique<asio::io_context>();
+
+        const auto host = filename.substr(0, separator);
+        const auto port = filename.substr(separator + 1);
+
+        tcp::acceptor acceptor(*context_, tcp::endpoint(tcp::v4(), std::stoi(port)));
+
+        socket_ = std::make_unique<asio::ip::tcp::socket>(*context_);
+
+        GFXRECON_LOG_INFO("Listening on port %s", port.c_str());
+
+        acceptor.accept(*socket_);
+
+        success = true;
+    }
+    else
+    {
+        result = util::platform::FileOpen(&file_descriptor_, filename.c_str(), "rb");
+    }
+
+    if ((result == 0) && (file_descriptor_ != nullptr || socket_))
+    {
+        success = ProcessFileHeader();
+
+        if (success)
+        {
+            filename_    = filename;
+            error_state_ = kErrorNone;
+        }
+        else
+        {
+            fclose(file_descriptor_);
+            file_descriptor_ = nullptr;
+        }
     }
     else
     {
         GFXRECON_LOG_ERROR("Failed to open file %s", filename.c_str());
         error_state_ = kErrorOpeningFile;
-    }
-
-    // Find absolute path of capture file
-    if (success)
-    {
-        absolute_path_ = util::filepath::GetBasedir(filename);
     }
 
     return success;
